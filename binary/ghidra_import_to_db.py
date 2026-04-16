@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-import_to_db.py
-Reads ghidra_output.json and imports data into firmware.db (SQLite).
+ghidra_import_to_db.py
+Reads ghidra_output.json and imports data into SQLite DB.
 
-字符串归属策略（直接引用）：
-  对每条 func_string_refs，找 ref_addr 之后最近的 call 指令（距离 <= 64 bytes），
-  将字符串归属到该 call 的 callee，而不是原始 caller。
-  若找不到合适的 callee，回退到原始 caller。
+字符串归属策略（直接引用 + 间接引用）：
+  对每条 func_string_refs，识别两种引用关系：
+  1. 间接引用 (indirect)：原始 caller 函数对字符串的引用
+  2. 直接引用 (direct)：ref_addr 之后最近的 call 指令的 callee 函数对字符串的引用（距离 <= 64 bytes）
+
+  例如：main() { printf("aaa") }
+  - main 对 "aaa" 是间接引用
+  - printf 对 "aaa" 是直接引用
 
 Usage:
     python3 ghidra_import_to_db.py
@@ -51,7 +55,8 @@ def init_db(conn):
             func_id     INTEGER,
             string_id   INTEGER,
             ref_addr    TEXT,
-            PRIMARY KEY (func_id, string_id, ref_addr),
+            ref_type    TEXT DEFAULT 'direct',  -- 'direct' or 'indirect'
+            PRIMARY KEY (func_id, string_id, ref_addr, ref_type),
             FOREIGN KEY (func_id)   REFERENCES binary_functions(id) ON DELETE CASCADE,
             FOREIGN KEY (string_id) REFERENCES binary_strings(id)   ON DELETE CASCADE
         );
@@ -153,11 +158,17 @@ def _find_callee(ref_addr_int, caller_addr, call_index, max_dist=64):
 
 def import_func_string_refs(cursor, refs, call_graph):
     """
-    将字符串归属到直接引用它的 callee（ref_addr 之后最近的 call 的目标函数）。
-    若找不到合适的 callee，回退到原始 caller。
+    将字符串引用分为直接引用和间接引用：
+    - 直接引用：ref_addr 之后最近的 call 的 callee 函数（距离 <= 64 bytes）
+    - 间接引用：原始的 caller 函数
+
+    例如：main() { printf("aaa") }
+    - main 对 "aaa" 是间接引用 (indirect)
+    - printf 对 "aaa" 是直接引用 (direct)
     """
     call_index = _build_call_index(call_graph)
-    inserted = 0
+    inserted_direct = 0
+    inserted_indirect = 0
     skipped  = 0
     fallback = 0
 
@@ -170,26 +181,43 @@ def import_func_string_refs(cursor, refs, call_graph):
         string_id = row[0]
 
         ref_addr_int = int(ref['ref_addr'], 16)
-        callee_addr  = _find_callee(ref_addr_int, ref['func_addr'], call_index)
-        target_addr  = callee_addr if callee_addr else ref['func_addr']
-        if not callee_addr:
-            fallback += 1
+        caller_addr  = ref['func_addr']
+        callee_addr  = _find_callee(ref_addr_int, caller_addr, call_index)
 
-        cursor.execute('SELECT id FROM binary_functions WHERE address=?', (target_addr,))
+        # 获取 caller 的 func_id（用于间接引用）
+        cursor.execute('SELECT id FROM binary_functions WHERE address=?', (caller_addr,))
         row = cursor.fetchone()
         if row is None:
             skipped += 1
             continue
-        func_id = row[0]
+        caller_id = row[0]
 
+        # 插入间接引用：caller -> string (indirect)
         cursor.execute(
-            'INSERT OR IGNORE INTO binary_func_string_refs (func_id, string_id, ref_addr) VALUES (?,?,?)',
-            (func_id, string_id, ref['ref_addr'])
+            'INSERT OR IGNORE INTO binary_func_string_refs (func_id, string_id, ref_addr, ref_type) VALUES (?,?,?,?)',
+            (caller_id, string_id, ref['ref_addr'], 'indirect')
         )
-        inserted += 1
+        inserted_indirect += 1
 
-    print('[+] Func-string refs inserted: {} (skipped: {}, fallback to caller: {})'.format(
-        inserted, skipped, fallback))
+        # 如果找到了 callee，插入直接引用：callee -> string (direct)
+        if callee_addr:
+            cursor.execute('SELECT id FROM binary_functions WHERE address=?', (callee_addr,))
+            row = cursor.fetchone()
+            if row is not None:
+                callee_id = row[0]
+                cursor.execute(
+                    'INSERT OR IGNORE INTO binary_func_string_refs (func_id, string_id, ref_addr, ref_type) VALUES (?,?,?,?)',
+                    (callee_id, string_id, ref['ref_addr'], 'direct')
+                )
+                inserted_direct += 1
+            else:
+                skipped += 1
+        else:
+            # 找不到 callee，只有间接引用
+            fallback += 1
+
+    print('[+] Func-string refs inserted: {} direct, {} indirect (skipped: {}, no callee found: {})'.format(
+        inserted_direct, inserted_indirect, skipped, fallback))
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -237,7 +265,7 @@ def main():
     import_call_graph(cursor, data.get('call_graph', []))
     conn.commit()
 
-    print('[*] Importing func-string refs (callee-direct)...')
+    print('[*] Importing func-string refs (direct + indirect)...')
     import_func_string_refs(cursor, data.get('func_string_refs', []), data.get('call_graph', []))
     conn.commit()
 

@@ -63,6 +63,7 @@ class SqliteExporter(IResultExporter, ILogger):
                 src_file_path TEXT,
                 confidence    REAL,
                 method        TEXT,
+                ref_type      TEXT,
                 shared_strings INTEGER,
                 call_similarity REAL,
                 timestamp     DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -99,25 +100,52 @@ class SqliteExporter(IResultExporter, ILogger):
         self.conn.commit()
 
     def _export_confirmed(self, ctx: MatchContext) -> None:
-        for bin_id, (src_id, confidence, method) in ctx.confirmed_matches.items():
+        # 方案A：导出时按 src_func_name 去重，同名函数只保留 evidence 最多（shared_strings 最大）的一条
+        confirmed_src_names: set[str] = set()
+
+        # 先按 shared_strings 降序排序，保证同名时优先保留证据最多的
+        sorted_matches = sorted(
+            ctx.confirmed_matches.items(),
+            key=lambda item: len(
+                ctx.bin_func_strings.get(item[0], set())
+                & ctx.src_func_strings.get(item[1][0], set())
+            ),
+            reverse=True,
+        )
+
+        skipped = 0
+        for bin_id, (src_id, confidence, method) in sorted_matches:
             bin_info = ctx.bin_func_info.get(bin_id)
             src_info = ctx.src_func_info.get(src_id)
             if not bin_info or not src_info:
                 continue
 
+            # 同名函数只导出一次
+            if src_info.name in confirmed_src_names:
+                skipped += 1
+                continue
+            confirmed_src_names.add(src_info.name)
+
             shared = len(
                 ctx.bin_func_strings.get(bin_id, set())
                 & ctx.src_func_strings.get(src_id, set())
             )
+
+            # 根据 method 判断引用类型
+            ref_type = "indirect" if "indirect" in method else "direct"
+
             # call_similarity 在阶段1结果中为 0（尚未计算）
             self.conn.execute(
                 """INSERT INTO mapping_results
                    (bin_func_id, bin_address, src_func_id, src_func_name,
-                    src_file_path, confidence, method, shared_strings, call_similarity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    src_file_path, confidence, method, ref_type, shared_strings, call_similarity)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (bin_id, bin_info.address, src_id, src_info.name,
-                 src_info.file_path, confidence, method, shared, 0.0),
+                 src_info.file_path, confidence, method, ref_type, shared, 0.0),
             )
+
+        if skipped:
+            print(f"  ℹ️  导出时按函数名去重，跳过了 {skipped} 条同名重复记录")
 
     def _export_candidates(self, ctx: MatchContext) -> None:
         for bin_id, cands in ctx.candidates.items():

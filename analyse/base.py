@@ -59,9 +59,13 @@ class MatchContext:
     src_func_info: Dict[int, FuncInfo] = field(default_factory=dict)
     bin_func_info: Dict[int, FuncInfo] = field(default_factory=dict)
 
-    # 字符串集合
+    # 字符串集合（直接引用）
     src_func_strings: Dict[int, Set[str]] = field(default_factory=dict)
     bin_func_strings: Dict[int, Set[str]] = field(default_factory=dict)
+
+    # 字符串集合（间接引用）- 通过调用图推导
+    src_func_strings_indirect: Dict[int, Set[str]] = field(default_factory=dict)
+    bin_func_strings_indirect: Dict[int, Set[str]] = field(default_factory=dict)
 
     # 调用图：{func_id: {'callers': set, 'callees': set}}
     src_call_graph: Dict[int, Dict[str, Set[int]]] = field(default_factory=dict)
