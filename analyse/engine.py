@@ -20,11 +20,13 @@ class MatchEngine:
         phases: list[IMatchPhase],
         exporter: IResultExporter,
         logger: ILogger,
+        phase1_loader=None,
     ):
         self.loader = loader
         self.phases = phases
         self.exporter = exporter
         self.logger = logger
+        self.phase1_loader = phase1_loader
         self.ctx = MatchContext()
 
     def run(self) -> None:
@@ -35,7 +37,11 @@ class MatchEngine:
         # 1. 加载数据
         self.loader.load(self.ctx)
 
-        # 2. 逐阶段执行
+        # 2. 如果提供了阶段1结果加载器，加载已确认的匹配
+        if self.phase1_loader:
+            self.phase1_loader.load_confirmed_matches(self.ctx)
+
+        # 3. 逐阶段执行
         for phase in self.phases:
             t0 = time.time()
             new_matches = phase.run(self.ctx)
@@ -58,7 +64,7 @@ class MatchEngine:
             self.exporter.save_stats(stats)
             self.exporter.commit()
 
-        # 3. 导出结果
+        # 4. 导出结果
         self.exporter.export(self.ctx)
         self.exporter.commit()
 

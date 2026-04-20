@@ -16,6 +16,9 @@ from .base import (
 )
 from .loader import SqliteDataLoader
 from .phase1_unique_string import UniqueStringMatchPhase
+from .phase2_indirect_string import IndirectStringMatchPhase
+from .phase2_indirect_string_fast import IndirectStringMatchPhaseFast
+from .phase1_loader import Phase1ResultLoader
 from .exporter import SqliteExporter
 from .engine import MatchEngine
 
@@ -23,6 +26,6 @@ from .engine import MatchEngine
 __all__ = [
     "FuncInfo", "MatchResult", "PhaseStats", "MatchContext",
     "IDataLoader", "IMatchPhase", "IResultExporter", "ILogger",
-    "SqliteDataLoader", "UniqueStringMatchPhase",
-    "SqliteExporter", "MatchEngine",
+    "SqliteDataLoader", "UniqueStringMatchPhase", "IndirectStringMatchPhase",
+    "IndirectStringMatchPhaseFast", "Phase1ResultLoader", "SqliteExporter", "MatchEngine",
 ]
